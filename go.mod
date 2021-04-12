@@ -1,3 +1,3 @@
-module github.com/mhale/smtpd
+module github.com/kunal-saini/smtpd
 
 go 1.14
