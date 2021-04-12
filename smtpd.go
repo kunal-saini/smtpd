@@ -40,6 +40,15 @@ type HandlerRcpt func(remoteAddr net.Addr, from string, to string) bool
 // AuthHandler function called when a login attempt is performed. Returns true if credentials are correct.
 type AuthHandler func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error)
 
+// Handler function called upon successful receipt of an email.
+type HandlerWithSession func(remoteAddr net.Addr, from string, to []string, data []byte, sv SessionValues) error
+
+// HandlerRcpt function called on RCPT. Return accept status.
+type RcptHandlerWithSession func(remoteAddr net.Addr, from string, to string, sv SessionValues) bool
+
+// AuthHandler function called when a login attempt is performed. Returns true if credentials are correct.
+type AuthHandlerWithSession func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte, sv SessionValues) (bool, error)
+
 var ErrServerClosed = errors.New("Server has been closed")
 
 // ListenAndServe listens on the TCP network address addr
@@ -101,6 +110,10 @@ type Server struct {
 	openSessions int32 // count of open sessions
 	mu           sync.Mutex
 	shutdownChan chan struct{} // let the sessions know we are shutting down
+
+	AuthHandlerWithSession  AuthHandlerWithSession
+	RcptHandlerWithSession  RcptHandlerWithSession
+	HandlerWithSession      HandlerWithSession
 }
 
 // ConfigureTLS creates a TLS configuration from certificate and key files.
@@ -211,6 +224,7 @@ func (srv *Server) Serve(ln net.Listener) error {
 	}
 }
 
+type SessionValues map[string]interface{}
 type session struct {
 	srv           *Server
 	conn          net.Conn
@@ -221,6 +235,7 @@ type session struct {
 	remoteName    string // Remote hostname as supplied with EHLO
 	tls           bool
 	authenticated bool
+	sv            SessionValues // Session Values
 }
 
 // Create new session from connection.
@@ -230,6 +245,7 @@ func (srv *Server) newSession(conn net.Conn) (s *session) {
 		conn: conn,
 		br:   bufio.NewReader(conn),
 		bw:   bufio.NewWriter(conn),
+		sv:   make(map[string]interface{}),
 	}
 
 	// Get remote end info for the Received header.
@@ -359,7 +375,7 @@ loop:
 				s.writef("530 5.7.0 Must issue a STARTTLS command first")
 				break
 			}
-			if s.srv.AuthHandler != nil && s.srv.AuthRequired && !s.authenticated {
+			if (s.srv.AuthHandler != nil || s.srv.AuthHandlerWithSession != nil) && s.srv.AuthRequired && !s.authenticated {
 				s.writef("530 5.7.0 Authentication required")
 				break
 			}
@@ -400,7 +416,7 @@ loop:
 				s.writef("530 5.7.0 Must issue a STARTTLS command first")
 				break
 			}
-			if s.srv.AuthHandler != nil && s.srv.AuthRequired && !s.authenticated {
+			if (s.srv.AuthHandler != nil || s.srv.AuthHandlerWithSession != nil) && s.srv.AuthRequired && !s.authenticated {
 				s.writef("530 5.7.0 Authentication required")
 				break
 			}
@@ -420,6 +436,8 @@ loop:
 					accept := true
 					if s.srv.HandlerRcpt != nil {
 						accept = s.srv.HandlerRcpt(s.conn.RemoteAddr(), from, match[1])
+					} else if s.srv.RcptHandlerWithSession != nil {
+						accept = s.srv.RcptHandlerWithSession(s.conn.RemoteAddr(), from, match[1], s.sv)
 					}
 					if accept {
 						to = append(to, match[1])
@@ -434,7 +452,7 @@ loop:
 				s.writef("530 5.7.0 Must issue a STARTTLS command first")
 				break
 			}
-			if s.srv.AuthHandler != nil && s.srv.AuthRequired && !s.authenticated {
+			if (s.srv.AuthHandler != nil || s.srv.AuthHandlerWithSession != nil) && s.srv.AuthRequired && !s.authenticated {
 				s.writef("530 5.7.0 Authentication required")
 				break
 			}
@@ -473,11 +491,13 @@ loop:
 
 			// Pass mail on to handler.
 			if s.srv.Handler != nil {
-				err := s.srv.Handler(s.conn.RemoteAddr(), from, to, buffer.Bytes())
-				if err != nil {
-					s.writef("451 4.3.5 Unable to process mail")
-					break
-				}
+				err = s.srv.Handler(s.conn.RemoteAddr(), from, to, buffer.Bytes())
+			} else if s.srv.HandlerWithSession != nil {
+				err = s.srv.HandlerWithSession(s.conn.RemoteAddr(), from, to, buffer.Bytes(), s.sv)
+			}
+			if err != nil {
+				s.writef("451 4.3.5 Unable to process mail")
+				break
 			}
 			s.writef("250 2.0.0 Ok: queued")
 
@@ -551,7 +571,7 @@ loop:
 				break
 			}
 			// Handle case where AUTH is requested but not configured (and therefore not listed as a service extension).
-			if s.srv.AuthHandler == nil {
+			if s.srv.AuthHandler == nil && s.srv.AuthHandlerWithSession == nil {
 				s.writef("502 5.5.1 Command not implemented")
 				break
 			}
@@ -748,7 +768,7 @@ func (s *session) makeEHLOResponse() (response string) {
 	}
 
 	// Only list AUTH if an AuthHandler is configured and at least one mechanism is allowed.
-	if s.srv.AuthHandler != nil {
+	if s.srv.AuthHandler != nil || s.srv.AuthHandlerWithSession != nil {
 		var mechs []string
 		for mech, allowed := range s.authMechs() {
 			if allowed {
@@ -791,8 +811,14 @@ func (s *session) handleAuthLogin(arg string) (bool, error) {
 		return false, errors.New("501 5.5.2 Syntax error (unable to decode)")
 	}
 
+	var authenticated bool
+
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "LOGIN", username, password, nil)
+	if s.srv.AuthHandler != nil {
+		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "LOGIN", username, password, nil)
+	} else {
+		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "LOGIN", username, password, nil, s.sv)
+	}
 
 	return authenticated, err
 }
@@ -819,8 +845,14 @@ func (s *session) handleAuthPlain(arg string) (bool, error) {
 		return false, errors.New("501 5.5.2 Syntax error (unable to parse)")
 	}
 
+	var authenticated bool
+
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil)
+	if s.srv.AuthHandler != nil {
+		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil)
+	} else {
+		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil, s.sv)
+	}
 
 	return authenticated, err
 }
@@ -849,8 +881,22 @@ func (s *session) handleAuthCramMD5() (bool, error) {
 		return false, errors.New("501 5.5.2 Syntax error (unable to parse)")
 	}
 
+	var authenticated bool
+
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared))
+	if s.srv.AuthHandler != nil {
+		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared))
+	} else {
+		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared), s.sv)
+	}
 
 	return authenticated, err
+}
+
+func (sv SessionValues) Add(key string, value interface{}) {
+	sv[key] = value
+}
+
+func (sv SessionValues) Get(key string) interface{}{
+	return sv[key]
 }
