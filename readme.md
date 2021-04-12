@@ -205,6 +205,63 @@ ListenAndServe("127.0.0.1:2525", mailHandler, authHandler)
 
 This allows AUTH to be listed as a supported extension, CRAM-MD5 as a supported mechanism, and allows clients to authenticate by sending an AUTH command.
 
+## Session Example
+
+```go
+package main
+
+import (
+    "bytes"
+    "log"
+    "net"
+    "net/mail"
+    "fmt"
+
+    "github.com/kunal-saini/smtpd"
+)
+
+func main() {
+	err := ListenAndServe("127.0.0.1:2525", mailHandler, authHandler, rcptHandler)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func ListenAndServe(addr string, handler smtpd.HandlerWithSession, authHandler smtpd.AuthHandlerWithSession, rcptHandler smtpd.RcptHandlerWithSession) error {
+	srv := &smtpd.Server{
+		Addr:                   addr,
+		Appname:                "smtp",
+		Hostname:               "smtp.example.com",
+		AuthRequired:           true,
+		MaxSize:                10000000, // 10 MB
+		HandlerWithSession:     handler,
+		AuthHandlerWithSession: authHandler,
+		RcptHandlerWithSession: rcptHandler,
+	}
+	return srv.ListenAndServe()
+}
+
+func authHandler(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte, sv smtpd.SessionValues) (bool, error) {
+	sv.Add("auth", string(username))
+	return string(username) == "valid" && string(password) == "password", nil
+}
+
+func rcptHandler(remoteAddr net.Addr, from string, to string, sv smtpd.SessionValues) bool {
+	sv.Add("from", from)
+	return true
+}
+
+func mailHandler(origin net.Addr, from string, to []string, data []byte, sv smtpd.SessionValues) error {
+	auth := sv.Get("auth")
+	fmt.Println(auth)
+
+	msg, _ := mail.ReadMessage(bytes.NewReader(data))
+	subject := msg.Header.Get("Subject")
+	log.Printf("Received mail from %s for %s with subject %s", from, to[0], subject)
+	return nil
+}
+```
+
 ## Testing
 
 The tests cover the supported SMTP command set and line parsing. A single server is created listening on an ephemeral port (52525) for the duration of the tests. Each test creates a new client connection for processing commands.
