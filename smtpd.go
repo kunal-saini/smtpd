@@ -816,7 +816,7 @@ func (s *session) handleAuthLogin(arg string) (bool, error) {
 	// Validate credentials.
 	if s.srv.AuthHandler != nil {
 		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "LOGIN", username, password, nil)
-	} else {
+	} else if s.srv.AuthHandlerWithSession != nil {
 		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "LOGIN", username, password, nil, s.sv)
 	}
 
@@ -850,7 +850,7 @@ func (s *session) handleAuthPlain(arg string) (bool, error) {
 	// Validate credentials.
 	if s.srv.AuthHandler != nil {
 		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil)
-	} else {
+	} else if s.srv.AuthHandlerWithSession != nil {
 		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil, s.sv)
 	}
 
@@ -886,7 +886,7 @@ func (s *session) handleAuthCramMD5() (bool, error) {
 	// Validate credentials.
 	if s.srv.AuthHandler != nil {
 		authenticated, err = s.srv.AuthHandler(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared))
-	} else {
+	} else if s.srv.AuthHandlerWithSession != nil {
 		authenticated, err = s.srv.AuthHandlerWithSession(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared), s.sv)
 	}
 
