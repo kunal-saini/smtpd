@@ -393,8 +393,7 @@ loop:
 						// Enforce the maximum message size if one is set.
 						size, err := strconv.Atoi(sizeMatch[1])
 						maxSize := s.srv.MaxSize
-						if s.sv.GetMaxSize() != nil {
-							maxSizeSession := s.sv.GetMaxSize()
+						if maxSizeSession := s.sv.GetMaxSize(); maxSizeSession != nil {
 							maxSize = *maxSizeSession
 						}
 						if err != nil { // Bad SIZE parameter
@@ -721,8 +720,7 @@ func (s *session) readData() ([]byte, error) {
 		}
 
 		maxSize := s.srv.MaxSize
-		if s.sv.GetMaxSize() != nil {
-			maxSizeSession := s.sv.GetMaxSize()
+		if maxSizeSession := s.sv.GetMaxSize(); maxSizeSession != nil {
 			maxSize = *maxSizeSession
 		}
 		// Enforce the maximum message size limit.
@@ -912,12 +910,12 @@ func (sv SessionValues) Get(key string) interface{} {
 }
 
 func (sv SessionValues) SetMaxSize(value int) {
-	sv["max_size"] = value
+	sv["_max_size_"] = value
 }
 
 func (sv SessionValues) GetMaxSize() *int {
-	if sv != nil && sv["max_size"] != nil {
-		if maxSize, ok := sv["max_size"].(int); ok {
+	if sv != nil && sv["_max_size_"] != nil {
+		if maxSize, ok := sv["_max_size_"].(int); ok {
 			return &maxSize
 		}
 	}
