@@ -40,13 +40,13 @@ type HandlerRcpt func(remoteAddr net.Addr, from string, to string) bool
 // AuthHandler function called when a login attempt is performed. Returns true if credentials are correct.
 type AuthHandler func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error)
 
-// Handler function called upon successful receipt of an email.
+// HandlerWithSession function called upon successful receipt of an email.
 type HandlerWithSession func(remoteAddr net.Addr, from string, to []string, data []byte, sv SessionValues) error
 
-// HandlerRcpt function called on RCPT. Return accept status.
+// RcptHandlerWithSession function called on RCPT. Return accept status.
 type RcptHandlerWithSession func(remoteAddr net.Addr, from string, to string, sv SessionValues) bool
 
-// AuthHandler function called when a login attempt is performed. Returns true if credentials are correct.
+// AuthHandlerWithSession function called when a login attempt is performed. Returns true if credentials are correct.
 type AuthHandlerWithSession func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte, sv SessionValues) (bool, error)
 
 var ErrServerClosed = errors.New("Server has been closed")
@@ -111,9 +111,9 @@ type Server struct {
 	mu           sync.Mutex
 	shutdownChan chan struct{} // let the sessions know we are shutting down
 
-	AuthHandlerWithSession  AuthHandlerWithSession
-	RcptHandlerWithSession  RcptHandlerWithSession
-	HandlerWithSession      HandlerWithSession
+	AuthHandlerWithSession AuthHandlerWithSession
+	RcptHandlerWithSession RcptHandlerWithSession
+	HandlerWithSession     HandlerWithSession
 }
 
 // ConfigureTLS creates a TLS configuration from certificate and key files.
@@ -392,10 +392,15 @@ loop:
 					} else {
 						// Enforce the maximum message size if one is set.
 						size, err := strconv.Atoi(sizeMatch[1])
+						maxSize := s.srv.MaxSize
+						if s.sv.GetMaxSize() != nil {
+							maxSizeSession := s.sv.GetMaxSize()
+							maxSize = *maxSizeSession
+						}
 						if err != nil { // Bad SIZE parameter
 							s.writef("501 5.5.4 Syntax error in parameters or arguments (invalid SIZE parameter)")
-						} else if s.srv.MaxSize > 0 && size > s.srv.MaxSize { // SIZE above maximum size, if set
-							err = maxSizeExceeded(s.srv.MaxSize)
+						} else if maxSize > 0 && size > maxSize { // SIZE above maximum size, if set
+							err = maxSizeExceeded(maxSize)
 							s.writef(err.Error())
 						} else { // SIZE ok
 							from = match[1]
@@ -715,11 +720,16 @@ func (s *session) readData() ([]byte, error) {
 			line = line[1:]
 		}
 
+		maxSize := s.srv.MaxSize
+		if s.sv.GetMaxSize() != nil {
+			maxSizeSession := s.sv.GetMaxSize()
+			maxSize = *maxSizeSession
+		}
 		// Enforce the maximum message size limit.
-		if s.srv.MaxSize > 0 {
-			if len(data)+len(line) > s.srv.MaxSize {
+		if maxSize > 0 {
+			if len(data)+len(line) > maxSize {
 				_, _ = s.br.Discard(s.br.Buffered()) // Discard the buffer remnants.
-				return nil, maxSizeExceeded(s.srv.MaxSize)
+				return nil, maxSizeExceeded(maxSize)
 			}
 		}
 
@@ -897,6 +907,19 @@ func (sv SessionValues) Add(key string, value interface{}) {
 	sv[key] = value
 }
 
-func (sv SessionValues) Get(key string) interface{}{
+func (sv SessionValues) Get(key string) interface{} {
 	return sv[key]
+}
+
+func (sv SessionValues) SetMaxSize(value int) {
+	sv["max_size"] = value
+}
+
+func (sv SessionValues) GetMaxSize() *int {
+	if sv != nil && sv["max_size"] != nil {
+		if maxSize, ok := sv["max_size"].(int); ok {
+			return &maxSize
+		}
+	}
+	return nil
 }
